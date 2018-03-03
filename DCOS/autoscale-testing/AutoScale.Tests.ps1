@@ -1,16 +1,15 @@
 ﻿$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$SERVICE_PATH = Join-Path $here "python-server.json"
 
 Import-Module AzureRM
 
 function Login-AzureRmFromEnv {
-    if ($Env:CLIENT_ID -eq $null) {
-        if (Test-Path "$here\env.ps1") {
-            . "$here\env.ps1"
-        }
-        else {
-            Write-Error "Could not find $here\env.ps1 file to source credentials, please create it"
-            exit 1
-        }
+    if (Test-Path "$here\env.ps1") {
+        . "$here\env.ps1"
+    }
+    else {
+        Write-Error "Could not find $here\env.ps1 file to source credentials, please create it"
+        exit 1
     }
     
     $subscription = Get-AzureRmSubscription -ErrorAction SilentlyContinue
@@ -21,11 +20,6 @@ function Login-AzureRmFromEnv {
         Login-AzureRmAccount -Credential $cred -ServicePrincipal -TenantId $Env:TENANT_ID
     }
 }
-
-
-Login-AzureRmFromEnv
-
-$RG_NAME = $Env:RESOURCE_GROUP
 
 function getScalesetsVMcount ($RG_NAME) {
     $vmCount = 0
@@ -50,6 +44,9 @@ function getDCOSagentCount ($RG_NAME) {
     $agentCount = $res.slaves.Count
     return $agentCount
 }
+
+Login-AzureRmFromEnv
+$RG_NAME = $Env:RESOURCE_GROUP
 
 Describe "Sanity check" {
     It "Is logged in to Azure" {
@@ -88,6 +85,21 @@ Describe "Getting initial state" {
                 $os.WindowsConfiguration | Should be $null
             }
         }
+    }
+
+    It "Should have at least one windows scaleset" {
+        # We will deploy the marathon test app on Windows so make sure it's possible
+        $scaleSets = Get-AzureRmVmss -ResourceGroupName $RG_NAME
+        $scaleSets | Should not be $null
+        $scaleSets.Count | Should BeGreaterThan 0
+        $winCount = 0
+        $scaleSets | ForEach-Object {
+            $os = $_.VirtualMachineProfile.OsProfile
+            if ($os.WindowsConfiguration) {
+                $winCount += 1
+            }
+        }
+        $winCount | Should BeGreaterThan 0
     }
 
     It "Can get scaleset VMs" {
@@ -163,11 +175,6 @@ Describe "DCOS UI" {
                 break
             }
 
-            # Only sleep if we are going to  retry
-            if ($retryCount -gt 1) {
-                Start-Sleep -Seconds 60
-            }
-
             $retryCount -= 1
         }
 
@@ -193,30 +200,65 @@ Describe "DCOS cli cluster" {
     }
 }
 
-Describe "DCOS service" {
+Describe "DCOS service add" {
     It "Has service definition file" {
-        $path = "$here/python-server.json"
-        Test-Path $path -PathType Leaf | Should be $True
+        Test-Path $SERVICE_PATH -PathType Leaf | Should be $True
     }
 
-
     It "Can schedule a service" {
-        $path = "$here/python-server.json"
-        dcos marathon app add "$path"
+        # This will fail if the service already exists
+        dcos marathon app add "$SERVICE_PATH"
         $? | Should be $true
     }
 
 }
 
-Describe "DCOS service progress" {
+Describe "DCOS service deployment progress" {
 
-    It "Can get the deployment" {
-        dcos marathon deployment list --json
-        $? | Should be $true
+    It "Can complete the deployment" {
+        
+        $retryCount = 1
+
+        while ($retryCount -gt 0) {
+
+            $deployments = dcos marathon deployment list --json | ConvertFrom-Json
+            Write-Host "Retry count=$retryCount  deployments=$deployments.Count"
+            if ($deployments.Count -eq 0){
+                break
+            }
+
+            $retryCount -= 1
+        }
+        # No deployments left after successful deploy
+        $deployments.Count | Should be 0
     }
 
-    It "Can get the service" {
-        dcos marathon app list --json
+    It "Can see the service" {
+        # Get service definition from file
+        Test-Path $SERVICE_PATH -PathType Leaf | Should be $True
+        $service = Get-Content -Raw -Path $SERVICE_PATH | ConvertFrom-Json
+        
+
+        $app = dcos marathon app list --json | ConvertFrom-Json | Where-Object {$_.id -eq "/" + $service.id}
+        $app.Count | Should be 1
+    }
+
+    It "Has a task Running" {
+        $service = Get-Content -Raw -Path $SERVICE_PATH | ConvertFrom-Json
+        $app = dcos marathon app list --json | ConvertFrom-Json | Where-Object {$_.id -eq "/" + $service.id}
+        $app.tasksRunning | Should be 1
+    }
+}
+
+Describe "DCOS service invocation" {
+    It "Can invoke the deployed web server" {
+        
+    }
+}
+
+Describe "DCOS service removal" {
+    It "Can remove the deployed service" {
+        dcos marathon app remove "/pythonserver"
         $? | Should be $true
     }
 }
