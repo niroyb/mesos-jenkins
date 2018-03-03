@@ -3,6 +3,13 @@
   "cmd": "python3 -m http.server 8080",
   "cpus": 0.5,
   "mem": 32.0,
+  "constraints": [
+    [
+      "os",
+      "LIKE",
+      "Windows"
+    ]
+  ],
   "container": {
     "type": "DOCKER",
     "docker": {
